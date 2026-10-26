@@ -36,11 +36,18 @@ def shorten_url(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse("Invalid URL", status_code=400)
 
     for attempt in range(3):
+
         code = generate_short_code()
-        entity = {"PartitionKey": "url", "RowKey": code, "long_url": long_url}
+        entity = {
+            "PartitionKey": "url",
+            "RowKey": code,
+            "long_url": long_url,
+            "clicks": 0,
+        }
 
         try:
             table_client.create_entity(entity=entity)
+
             break
         except ResourceExistsError:
             continue
@@ -49,7 +56,7 @@ def shorten_url(req: func.HttpRequest) -> func.HttpResponse:
     base = req.url.split("/api/")[0]
     short_url = f"{base}/api/{code}"
     return func.HttpResponse(
-        json.dumps({"short_url": short_url}),
+        json.dumps({"short_url": short_url, "code": code}),
         mimetype="application/json",
         status_code=200,
     )
@@ -60,6 +67,9 @@ def get_long_url(req: func.HttpRequest) -> func.HttpResponse:
     code = req.route_params.get("code")
     try:
         entity = table_client.get_entity(partition_key="url", row_key=code)
+        entity["clicks"] = entity.get("clicks", 0) + 1
+
+        table_client.update_entity(entity=entity, mode="merge")
 
     except ResourceNotFoundError:
         return func.HttpResponse(
@@ -67,3 +77,19 @@ def get_long_url(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     return func.HttpResponse(status_code=302, headers={"Location": entity["long_url"]})
+
+
+@app.route(route="info/{code}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_clicks(req: func.HttpRequest) -> func.HttpResponse:
+    code = req.route_params.get("code")
+    try:
+        entity = table_client.get_entity(partition_key="url", row_key=code)
+    except ResourceNotFoundError:
+        return func.HttpResponse(
+            f"No URL matches the given code: {code}", status_code=404
+        )
+    return func.HttpResponse(
+        json.dumps({"code": code, "clicks": entity.get("clicks", 0)}),
+        mimetype="application/json",
+        status_code=200,
+    )
